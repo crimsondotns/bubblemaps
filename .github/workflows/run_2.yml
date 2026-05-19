@@ -26,7 +26,7 @@ jobs:
 
       - name: Write Secrets to Files
         env:
-          GCP_CREDS: ${{ secrets.GCP_CREDENTIALS }}
+          GCP_CREDS: ${{ secrets.GCP_CREDENTIALS_JSON }}
           ENV_FILE_CONTENT: ${{ secrets.ENV_FILE }}
         run: |
           python -c "import os; open('credentials.json', 'w').write(os.environ.get('GCP_CREDS', ''))"
