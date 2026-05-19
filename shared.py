@@ -52,8 +52,8 @@ def get_gsheet_client():
         ]
         creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=scopes)
         return gspread.authorize(creds)
-    except Exception:
-        print("Error: Could not initialize data store connection.")
+    except Exception as e:
+        print(f"Error: Could not initialize data store connection. Details: {e}")
         sys.exit(1)
 
 def _make_validation(api_path):

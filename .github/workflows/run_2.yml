@@ -25,10 +25,14 @@ jobs:
         run: pip install requests gspread google-auth pyjwt python-dotenv
 
       - name: Create credentials.json
-        run: echo '${{ secrets.GCP_CREDENTIALS }}' > credentials.json
+        env:
+          GCP_CREDS: ${{ secrets.GCP_CREDENTIALS }}
+        run: echo "$GCP_CREDS" > credentials.json
 
       - name: Create .env
-        run: echo '${{ secrets.ENV_FILE }}' > .env
+        env:
+          ENV_FILE_CONTENT: ${{ secrets.ENV_FILE }}
+        run: echo "$ENV_FILE_CONTENT" > .env
 
       - name: Run Cluster Analysis
         run: python cluster.py
