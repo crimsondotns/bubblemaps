@@ -1,0 +1,38 @@
+name: Daily Data Routine
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # รันทุกวันเวลา 00:00 UTC (07:00 น. เวลาไทย)
+  workflow_dispatch: # เผื่อกรณีที่คุณต้องการกดรันเองผ่านหน้าเว็บ
+
+jobs:
+  run-routine:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        # ติดตั้งแบบซ่อน Log (-q)
+        run: |
+          pip install requests PyJWT gspread google-auth -q
+          # หรือถ้าคุณมีไฟล์ requirements.txt ก็ให้ใช้: pip install -r requirements.txt -q
+
+      - name: Create Credentials File on-the-fly
+        # ดึงไฟล์ Credentials ของ Google Sheets จาก Secret มาสร้างเฉพาะกิจแล้วลบทิ้ง
+        run: echo '${{ secrets.GCP_CREDENTIALS_JSON }}' > credentials.json
+
+      - name: Execute Main Script
+        env:
+          GSHEET_KEY: ${{ secrets.GSHEET_KEY }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          API_BASE: ${{ secrets.API_BASE }}
+          API_ORIGIN: ${{ secrets.API_ORIGIN }}
+        run: |
+          python session.py # <--- เปลี่ยนเป็นชื่อไฟล์หลักของคุณที่ใช้สั่งรัน
+          rm credentials.json # ลบทิ้งทันทีหลังรันเสร็จเพื่อความปลอดภัย
