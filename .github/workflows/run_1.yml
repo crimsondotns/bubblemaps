@@ -1,0 +1,32 @@
+name: BubbleMaps Analysis - Run 1 (Clear)
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # 00:00 UTC (07:00 UTC+7)
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          pip install requests gspread google-auth pyjwt
+
+      - name: Create credentials.json
+        run: |
+          echo '${{ secrets.GCP_CREDENTIALS }}' > credentials.json
+
+      - name: Run Cluster Analysis
+        env:
+          TIME_LIMIT_HOURS: '5.5'
+          WRITE_MODE: 'clear'
+        run: python cluster.py
