@@ -77,10 +77,13 @@ def analyze_token(token_address, chain):
             print(f"⚠️ ไม่พบ {TARGET_WALLET} ใน Top {FETCH_COUNT} — ใช้ holder อันดับ 1 แทน")
             target_wallet = holders[0]
     else:
-        # ใช้ holder อันดับ 1 ที่ไม่ใช่ CEX/DEX/Contract (supernode OK)
+        # ใช้ holder อันดับ 1 ที่เป็น Normal Wallet เท่านั้น (ไม่ใช่ Supernode/CEX/DEX/Contract)
         for w in holders:
             details = w.get("address_details", {})
-            if not details.get("is_contract") and not details.get("is_cex") and not details.get("is_dex"):
+            if (not details.get("is_supernode") and 
+                not details.get("is_contract") and 
+                not details.get("is_cex") and 
+                not details.get("is_dex")):
                 target_wallet = w
                 break
         if not target_wallet:
