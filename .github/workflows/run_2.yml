@@ -19,7 +19,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install requests gspread google-auth pyjwt
+          pip install requests gspread google-auth pyjwt python-dotenv
 
       - name: Create credentials.json
         run: |
