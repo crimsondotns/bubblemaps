@@ -18,13 +18,10 @@ jobs:
           python-version: '3.10'
 
       - name: Install Dependencies
-        # ติดตั้งแบบซ่อน Log (-q)
         run: |
           pip install requests PyJWT gspread google-auth -q
-          # หรือถ้าคุณมีไฟล์ requirements.txt ก็ให้ใช้: pip install -r requirements.txt -q
 
       - name: Create Credentials File on-the-fly
-        # ดึงไฟล์ Credentials ของ Google Sheets จาก Secret มาสร้างเฉพาะกิจแล้วลบทิ้ง
         run: echo '${{ secrets.GCP_CREDENTIALS_JSON }}' > credentials.json
 
       - name: Load Environment Variables
@@ -32,5 +29,5 @@ jobs:
 
       - name: Execute Main Script
         run: |
-          python session.py # <--- เปลี่ยนเป็นชื่อไฟล์หลักของคุณที่ใช้สั่งรัน
-          rm credentials.json # ลบทิ้งทันทีหลังรันเสร็จเพื่อความปลอดภัย
+          python session.py 
+          rm credentials.json
