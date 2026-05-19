@@ -27,12 +27,10 @@ jobs:
         # ดึงไฟล์ Credentials ของ Google Sheets จาก Secret มาสร้างเฉพาะกิจแล้วลบทิ้ง
         run: echo '${{ secrets.GCP_CREDENTIALS_JSON }}' > credentials.json
 
+      - name: Load Environment Variables
+        run: echo "${{ secrets.ENV_FILE }}" >> $GITHUB_ENV
+
       - name: Execute Main Script
-        env:
-          GSHEET_KEY: ${{ secrets.GSHEET_KEY }}
-          JWT_SECRET: ${{ secrets.JWT_SECRET }}
-          API_BASE: ${{ secrets.API_BASE }}
-          API_ORIGIN: ${{ secrets.API_ORIGIN }}
         run: |
           python session.py # <--- เปลี่ยนเป็นชื่อไฟล์หลักของคุณที่ใช้สั่งรัน
           rm credentials.json # ลบทิ้งทันทีหลังรันเสร็จเพื่อความปลอดภัย
