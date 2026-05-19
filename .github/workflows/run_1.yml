@@ -24,15 +24,13 @@ jobs:
       - name: Install Dependencies
         run: pip install requests gspread google-auth pyjwt python-dotenv
 
-      - name: Create credentials.json
+      - name: Write Secrets to Files
         env:
           GCP_CREDS: ${{ secrets.GCP_CREDENTIALS }}
-        run: echo "$GCP_CREDS" > credentials.json
-
-      - name: Create .env
-        env:
           ENV_FILE_CONTENT: ${{ secrets.ENV_FILE }}
-        run: echo "$ENV_FILE_CONTENT" > .env
+        run: |
+          python -c "import os; open('credentials.json', 'w').write(os.environ.get('GCP_CREDS', ''))"
+          python -c "import os; open('.env', 'w').write(os.environ.get('ENV_FILE_CONTENT', ''))"
 
       - name: Run Cluster Analysis
         run: python cluster.py
