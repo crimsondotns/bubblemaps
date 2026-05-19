@@ -20,9 +20,7 @@ FETCH_COUNT = 250
 MAX_MAGIC_ROUNDS = 5  # จำนวนรอบสูงสุดของ Recursive Magic Expand
 
 # ── Google Sheets ──
-GSHEET_KEY = "1VIu93hO3e8pTRC1FD8z3yehCvGqxGV1EfT41IIwLH7g"
 GSHEET_WORKSHEET = "bubblemaps.io"
-CREDENTIALS_FILE = "credentials.json"
 
 
 

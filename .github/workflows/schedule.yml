@@ -19,7 +19,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install requests PyJWT gspread google-auth -q
+          pip install requests PyJWT gspread google-auth python-dotenv -q
 
       - name: Create Credentials File on-the-fly
         run: echo '${{ secrets.GCP_CREDENTIALS_JSON }}' > credentials.json
@@ -29,5 +29,5 @@ jobs:
 
       - name: Execute Main Script
         run: |
-          python session.py 
+          python cluster.py 
           rm credentials.json

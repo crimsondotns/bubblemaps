@@ -10,6 +10,11 @@ import jwt
 import gspread
 # pyrefly: ignore [missing-import]
 from google.oauth2.service_account import Credentials
+# pyrefly: ignore [missing-import]
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # ── Google Sheets ──
 GSHEET_KEY = os.getenv("GSHEET_KEY")
