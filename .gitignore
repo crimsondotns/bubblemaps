@@ -5,12 +5,6 @@ __pycache__/
 # Node
 node_modules
 
-# Bundler
-dist
-build
-bundle.js
-bundle_v2.js
-
 # Logs
 *.log
 
