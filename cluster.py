@@ -1,5 +1,6 @@
 import time
 from datetime import datetime, timezone, timedelta
+import json
 from shared import (
     get_gsheet_client,
     fetch_top_holders,
@@ -19,7 +20,7 @@ MAX_MAGIC_ROUNDS = 1  # จำนวนรอบสูงสุดของ Recu
 DELAY_BETWEEN_TOKENS = 10  # วินาทีระหว่างแต่ละ token
 
 # ── Google Sheets ──
-GSHEET_WORKSHEET = "bubblemaps.io"
+GSHEET_WORKSHEET = "bubbleeee"
 SUBSCRIBE_WORKSHEET = "subscribetokens"
 
 # ╔═══════════════════════════════════════════════════════════════════╗
@@ -28,12 +29,13 @@ SUBSCRIBE_WORKSHEET = "subscribetokens"
 
 # ─────────────────────── Google Sheets ───────────────────────────────
 
-def write_to_gsheet(all_rows):
-    """บันทึกผลลัพธ์ลง Google Sheets แบบ Batch"""
+def bulk_write_to_gsheet(all_rows):
+    """บันทึกผลลัพธ์หลายแถวลง Google Sheets (bulk write + retry)"""
     if not all_rows:
         return
 
     print(f"\n5️⃣ กำลังบันทึก {len(all_rows)} แถวลง Google Sheets...")
+
     headers = [
         "Token Address", "Chain", "Wallet Address",
         "Wallet Amount", "Wallet Share (%)", "Label",
@@ -42,14 +44,33 @@ def write_to_gsheet(all_rows):
     ]
     all_data = [headers] + all_rows
 
-    try:
-        client = get_gsheet_client()
-        sheet = client.open_by_key(GSHEET_KEY).worksheet(GSHEET_WORKSHEET)
-        sheet.clear()
-        sheet.update(range_name="A1", values=all_data)
-        print("✅ บันทึกข้อมูลสำเร็จ! ตรวจสอบ Google Sheets ได้เลย")
-    except Exception as e:
-        print(f"   ❌ ล้มเหลวในการบันทึกข้อมูล: {e}")
+    max_retries = 5
+    for attempt in range(1, max_retries + 1):
+        try:
+            client = get_gsheet_client()
+            sheet = client.open_by_key(GSHEET_KEY).worksheet(GSHEET_WORKSHEET)
+            sheet.clear()
+
+            # แบ่งเขียนเป็น batch ละ 500 แถว เพื่อหลีกเลี่ยง 10MB API limit
+            BATCH_SIZE = 500
+            for i in range(0, len(all_data), BATCH_SIZE):
+                batch = all_data[i:i + BATCH_SIZE]
+                start_row = i + 1
+                sheet.update(range_name=f"A{start_row}", values=batch)
+                if len(all_data) > BATCH_SIZE:
+                    print(f"   📝 เขียนแถว {start_row}–{start_row + len(batch) - 1} ({len(batch)} แถว)...")
+                    time.sleep(1)  # หลีกเลี่ยง rate limit
+
+            print("✅ บันทึกข้อมูลสำเร็จ! ตรวจสอบ Google Sheets ได้เลย")
+            return
+        except Exception as e:
+            wait_time = 2 ** attempt  # 2, 4, 8, 16, 32 วินาที
+            print(f"   ⚠️ ครั้งที่ {attempt}/{max_retries} — {e}")
+            if attempt < max_retries:
+                print(f"   ⏳ รอ {wait_time} วินาที แล้วลองใหม่...")
+                time.sleep(wait_time)
+            else:
+                print(f"   ❌ ล้มเหลวหลัง {max_retries} ครั้ง — ข้อมูลไม่ได้บันทึก")
 
 
 # ─────────────────────── Main ────────────────────────────────────────
@@ -77,16 +98,20 @@ def analyze_token(token_address, chain):
             print(f"⚠️ ไม่พบ {TARGET_WALLET} ใน Top {FETCH_COUNT} — ใช้ holder อันดับ 1 แทน")
             target_wallet = holders[0]
     else:
-        # ใช้ holder อันดับ 1 ที่เป็น Supernode (แต่ไม่มี label) และไม่ใช่ CEX/DEX/Contract
+        # ใช้ holder อันดับ 1 ที่เป็น Normal Wallet หรือเป็น Supernode ที่ไม่มี label (และไม่ใช่ CEX/DEX/Contract)
         for w in holders:
             details = w.get("address_details", {})
-            if (details.get("is_supernode") and 
-                not details.get("label") and 
-                not details.get("is_contract") and 
-                not details.get("is_cex") and 
-                not details.get("is_dex")):
-                target_wallet = w
-                break
+            
+            is_supernode = details.get("is_supernode", False)
+            label = details.get("label")
+            is_contract = details.get("is_contract", False)
+            is_cex = details.get("is_cex", False)
+            is_dex = details.get("is_dex", False)
+
+            if not is_contract and not is_cex and not is_dex:
+                if not is_supernode or (is_supernode and not label):
+                    target_wallet = w
+                    break
         if not target_wallet:
             target_wallet = holders[0]
 
@@ -103,6 +128,15 @@ def analyze_token(token_address, chain):
     print(f"   ├─ Amount: {amount:,.2f}")
     print(f"   ├─ Share: {share*100:.2f}%")
     print(f"   └─ Label: {label}")
+    print(f"   🔍 Debug Top Wallet Info:")
+    
+    # ดึงเฉพาะข้อมูลที่น่าสนใจมา Debug พิมพ์ (เพื่อไม่ให้รกเกินไป)
+    debug_info = {
+        "address": target_wallet.get("address"),
+        "address_details": target_wallet.get("address_details", {}),
+        "holder_data": target_wallet.get("holder_data", {})
+    }
+    print("   " + json.dumps(debug_info, indent=4).replace('\n', '\n   '))
 
     # Step 2: Recursive Magic Expand
     all_addresses = run_recursive_magic_expand(token_address, chain, holders, MAX_MAGIC_ROUNDS)
@@ -115,7 +149,7 @@ def analyze_token(token_address, chain):
     cluster_size = cluster_data["size"]
     cluster_amount = cluster_data["amount"]
     cluster_supply_pct = cluster_data["share_pct"]
-    top_cluster_wallet = cluster_data["top_cluster_wallet"]
+    top_cluster_wallet = cluster_data.get("top_cluster_wallet", "")
 
     # แต่ amount/share/label ยังคงเป็นของ Top Wallet ตัวแรกที่ตรวจพบ (ไม่เปลี่ยน)
 
@@ -190,7 +224,7 @@ if __name__ == "__main__":
 
     # Bulk write ทีเดียว
     if all_results:
-        write_to_gsheet(all_results)
+        bulk_write_to_gsheet(all_results)
     else:
         print("❌ ไม่มีผลลัพธ์ที่ต้องบันทึก")
 
