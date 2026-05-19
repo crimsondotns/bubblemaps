@@ -1,32 +1,35 @@
-name: BubbleMaps Analysis - Run 2 (Append)
+name: Token Analysis - Run 2 (Append)
 
 on:
   schedule:
-    - cron: '0 6 * * *'  # 06:00 UTC (13:00 UTC+7)
+    - cron: '0 6 * * *'
   workflow_dispatch:
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
+    env:
+      TIME_LIMIT_HOURS: '5.5'
+      WRITE_MODE: 'append'
+      GSHEET_KEY: ${{ secrets.GSHEET_KEY }}
+      JWT_SECRET: ${{ secrets.JWT_SECRET }}
+      API_BASE: ${{ secrets.API_BASE }}
+      API_ORIGIN: ${{ secrets.API_ORIGIN }}
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
       - name: Install Dependencies
-        run: |
-          pip install requests gspread google-auth pyjwt python-dotenv
+        run: pip install requests gspread google-auth pyjwt python-dotenv
 
       - name: Create credentials.json
-        run: |
-          echo '${{ secrets.GCP_CREDENTIALS }}' > credentials.json
+        run: echo '${{ secrets.GCP_CREDENTIALS }}' > credentials.json
 
       - name: Run Cluster Analysis
-        env:
-          TIME_LIMIT_HOURS: '5.5'
-          WRITE_MODE: 'append'
         run: python cluster.py
