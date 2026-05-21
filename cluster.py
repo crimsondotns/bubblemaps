@@ -16,7 +16,7 @@ from shared import (
 # ╚═══════════════════════════════════════════════════════════════════╝
 
 TARGET_WALLET = ""  # ระบุ address ที่ต้องการดู cluster (เว้นว่าง = ใช้ holder อันดับ 1)
-FETCH_COUNT = 250
+FETCH_COUNT = 80
 MAX_MAGIC_ROUNDS = 1  # จำนวนรอบสูงสุดของ Recursive Magic Expand
 DELAY_BETWEEN_TOKENS = 10  # วินาทีระหว่างแต่ละ token
 
