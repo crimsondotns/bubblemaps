@@ -2,6 +2,7 @@ import os
 import sys
 import uuid
 import time
+import random
 import requests
 import datetime
 # pyrefly: ignore [missing-import]
@@ -39,6 +40,45 @@ COMMON_HEADERS = {
     "x-session-id": SESSION_ID,
 }
 
+# ── HTTP retry ────────────────────────────────────────────────────────
+# API ตอบ 5xx เป็นครั้งคราว (ในรอบที่ผ่านมาเจอ 503 เจ็ดครั้ง, 500 สองครั้ง)
+# เดิมยิงครั้งเดียวแล้วทิ้ง token นั้นไปเลย — token จึงหายเงียบๆ
+HTTP_MAX_ATTEMPTS = int(os.getenv("HTTP_MAX_ATTEMPTS", "4"))
+HTTP_TIMEOUT = int(os.getenv("HTTP_TIMEOUT", "120"))
+
+
+def post_with_retry(url, payload, headers, label="request"):
+    """POST พร้อม retry สำหรับ 5xx / 429 / network error
+
+    คืน Response ถ้าได้ 2xx, หรือ None ถ้าหมดโควตา retry แล้วยังไม่สำเร็จ
+    4xx (ยกเว้น 429) ถือว่าเป็น error ถาวร — ไม่ retry
+    """
+    for attempt in range(1, HTTP_MAX_ATTEMPTS + 1):
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=HTTP_TIMEOUT)
+
+            if response.status_code < 400:
+                return response
+
+            retryable = response.status_code >= 500 or response.status_code == 429
+            if not retryable:
+                print(f"   ❌ {label}: HTTP {response.status_code} (ไม่ retry)")
+                return None
+
+            reason = f"HTTP {response.status_code}"
+        except requests.RequestException as e:
+            reason = type(e).__name__
+
+        if attempt < HTTP_MAX_ATTEMPTS:
+            wait = min(2 ** attempt + random.uniform(0, 1), 30)
+            print(f"   ⚠️ {label}: {reason} — ลองใหม่ครั้งที่ {attempt + 1}/{HTTP_MAX_ATTEMPTS} ใน {wait:.1f} วินาที")
+            time.sleep(wait)
+        else:
+            print(f"   ❌ {label}: {reason} — ล้มเหลวหลังลอง {HTTP_MAX_ATTEMPTS} ครั้ง")
+
+    return None
+
+
 def get_formatted_time():
     """Returns current time in requested format: m/d/yyyy H:mm:ss"""
     return datetime.datetime.now().strftime("%-m/%-d/%Y %H:%M:%S")
@@ -73,7 +113,9 @@ def fetch_top_holders(token_address, chain, count=250):
         headers = {**COMMON_HEADERS, "x-validation": _make_validation(f"/addresses/token-top-holders?count={count}&nocache=false")}
 
         print(f"1️⃣ Fetching top {count} entities...")
-        response = requests.post(url, json=payload, headers=headers)
+        response = post_with_retry(url, payload, headers, label="top-holders")
+        if response is None:
+            return []
         print(f"   📥 Status: {response.status_code}")
 
         if response.status_code == 200:
@@ -110,7 +152,9 @@ def fetch_magic_expand_once(token_address, chain, addresses_list):
         }
         headers = {**COMMON_HEADERS, "x-validation": _make_validation("/addresses/expand/magic")}
 
-        response = requests.post(url, json=payload, headers=headers)
+        response = post_with_retry(url, payload, headers, label="expand/magic")
+        if response is None:
+            return []
         if response.status_code == 200:
             data = response.json()
             return data if isinstance(data, list) else data.get('addresses', data.get('data', []))
@@ -129,7 +173,9 @@ def fetch_subgraph_data(token_address, chain, addresses_list):
         headers = {**COMMON_HEADERS, "x-validation": _make_validation(f"/relationships/subgraph?whitelist_token_address={token_address}&whitelist_token_chain={chain}")}
 
         print(f"\n3️⃣ Requesting relationships for ({len(addresses_list)}) entities...")
-        response = requests.post(url, json=payload, headers=headers)
+        response = post_with_retry(url, payload, headers, label="subgraph")
+        if response is None:
+            return []
         print(f"   📥 Status: {response.status_code}")
 
         if response.status_code == 200:

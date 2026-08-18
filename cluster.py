@@ -1,5 +1,6 @@
 import time
 import os
+import sys
 from datetime import datetime, timezone, timedelta
 import json
 from shared import (
@@ -19,7 +20,9 @@ TARGET_WALLET = ""  # ระบุ address ที่ต้องการดู 
 FETCH_COUNT = 80
 MAX_MAGIC_ROUNDS = 1  # จำนวนรอบสูงสุดของ Recursive Magic Expand
 DELAY_BETWEEN_TOKENS = 10  # วินาทีระหว่างแต่ละ token
-FLUSH_EVERY = 50  # เขียนลงชีตทุกๆ กี่แถว (0 = เขียนครั้งเดียวตอนจบ)
+FLUSH_EVERY = int(os.getenv("FLUSH_EVERY", "25"))  # เขียนลงชีตทุกๆ กี่แถว (0 = เขียนครั้งเดียวตอนจบ)
+SHEETS_WRITE_DELAY_MS = int(os.getenv("SHEETS_WRITE_DELAY_MS", "1500"))  # เว้นจังหวะเขียน (โควตารวมทุก runner)
+TIME_LIMIT_HOURS = float(os.getenv("TIME_LIMIT_HOURS", "5.0"))
 
 # ── Google Sheets ──
 GSHEET_WORKSHEET = "bubbleeee"
@@ -39,16 +42,41 @@ HEADERS = [
 ]
 
 
-def bulk_write_to_gsheet(all_rows, mode="clear"):
+def ensure_worksheet(name, rows=2000, cols=20):
+    """คืน worksheet ชื่อ name — สร้างใหม่ให้ถ้ายังไม่มี
+
+    ทำให้เพิ่มจำนวน batch ได้โดยไม่ต้องไปสร้างแท็บเองในชีต
+    """
+    for attempt in range(1, 4):
+        try:
+            sh = get_gsheet_client().open_by_key(GSHEET_KEY)
+            try:
+                return sh.worksheet(name)
+            except Exception:
+                print(f"   ➕ สร้างแท็บใหม่: '{name}'")
+                return sh.add_worksheet(title=name, rows=str(rows), cols=str(cols))
+        except Exception as e:
+            # แท็บอาจถูกสร้างพร้อมกันโดย batch อื่น — ลองอ่านซ้ำ
+            if attempt == 3:
+                raise
+            print(f"   ⚠️ เตรียมแท็บ '{name}' ไม่สำเร็จ ({e}) — ลองใหม่")
+            time.sleep(2 ** attempt)
+
+
+def bulk_write_to_gsheet(all_rows, mode="clear", worksheet_name=None, write_headers=False):
     """บันทึกผลลัพธ์หลายแถวลง Google Sheets (bulk write + retry)
 
-    mode="clear"  → ล้างชีตก่อนแล้วเขียนใหม่ (ใช้เฉพาะตอนเริ่มรอบใหม่ที่ index 0)
-    mode="append" → ต่อท้ายข้อมูลเดิม ไม่ล้าง (ใช้กับการรันต่อจาก state เดิม)
+    mode="clear"  → ล้างแท็บก่อนแล้วเขียนใหม่ (ใช้กับการเขียนครั้งแรกของ batch)
+    mode="append" → ต่อท้ายข้อมูลเดิม ไม่ล้าง (ใช้กับ flush ครั้งถัดๆ ไป)
+
+    worksheet_name = แท็บปลายทาง (default: GSHEET_WORKSHEET)
+    แต่ละ batch เขียนแท็บของตัวเองเท่านั้น จึงไม่มีทางล้างข้อมูลของ batch อื่น
     """
-    if not all_rows:
+    if not all_rows and not write_headers:
         return
 
-    print(f"\n5️⃣ กำลังบันทึก {len(all_rows)} แถวลง Google Sheets (mode={mode})...")
+    sheet_name = worksheet_name or GSHEET_WORKSHEET
+    print(f"\n5️⃣ กำลังบันทึก {len(all_rows)} แถวลงแท็บ '{sheet_name}' (mode={mode})...")
 
     BATCH_SIZE = 500
     max_retries = 5
@@ -56,7 +84,7 @@ def bulk_write_to_gsheet(all_rows, mode="clear"):
     for attempt in range(1, max_retries + 1):
         try:
             client = get_gsheet_client()
-            sheet = client.open_by_key(GSHEET_KEY).worksheet(GSHEET_WORKSHEET)
+            sheet = client.open_by_key(GSHEET_KEY).worksheet(sheet_name)
 
             if mode == "clear":
                 sheet.clear()
@@ -73,9 +101,10 @@ def bulk_write_to_gsheet(all_rows, mode="clear"):
                 batch = all_data[i:i + BATCH_SIZE]
                 start_row = start_offset + i + 1
                 sheet.update(range_name=f"A{start_row}", values=batch)
-                if len(all_data) > BATCH_SIZE:
-                    print(f"   📝 เขียนแถว {start_row}–{start_row + len(batch) - 1} ({len(batch)} แถว)...")
-                    time.sleep(1)
+                print(f"   📝 เขียนแถว {start_row}–{start_row + len(batch) - 1} ({len(batch)} แถว)...")
+                # Google Sheets จำกัด ~60 writes/นาที ต่อ user และเป็นโควตา "รวม"
+                # ทุก runner ที่รันขนานกัน — จึงต้องเว้นจังหวะทุกครั้ง ไม่ใช่เฉพาะตอนหลายก้อน
+                time.sleep(SHEETS_WRITE_DELAY_MS / 1000)
 
             print("✅ บันทึกข้อมูลสำเร็จ! ตรวจสอบ Google Sheets ได้เลย")
             return
@@ -211,104 +240,143 @@ def read_subscribe_tokens():
     return pairs
 
 
+def resolve_batch():
+    """อ่าน --batch N/TOTAL (หรือ BATCH_INDEX/BATCH_TOTAL) → (index, total) หรือ None
+
+    index เริ่มที่ 1. ถ้าไม่ระบุ = โหมดรันเดียวจบ (ทำทุก token, เขียนชีตหลัก)
+    """
+    raw = None
+    argv = sys.argv[1:]
+    for i, a in enumerate(argv):
+        if a == "--batch" and i + 1 < len(argv):
+            raw = argv[i + 1]
+        elif a.startswith("--batch="):
+            raw = a.split("=", 1)[1]
+
+    index = total = None
+    if raw:
+        if "/" in raw:
+            a, b = raw.split("/", 1)
+            index, total = int(a), int(b)
+        else:
+            index = int(raw)
+    if index is None and os.getenv("BATCH_INDEX"):
+        index = int(os.getenv("BATCH_INDEX"))
+    if total is None and os.getenv("BATCH_TOTAL"):
+        total = int(os.getenv("BATCH_TOTAL"))
+
+    if index is None:
+        return None
+    if not total or total < 1:
+        raise SystemExit("❌ ระบุ --batch N ต้องมี TOTAL ด้วย (--batch N/TOTAL หรือ BATCH_TOTAL)")
+    if not 1 <= index <= total:
+        raise SystemExit(f"❌ batch index {index} ต้องอยู่ระหว่าง 1 ถึง {total}")
+    return (index, total)
+
+
+def slice_for_batch(items, index, total):
+    """หั่น items เป็น total ชิ้นเท่าๆ กัน แล้วคืนชิ้นที่ index (เริ่มที่ 1)
+
+    Deterministic: จำนวน token เท่าเดิม batch เดิมจะได้ token ชุดเดิมเสมอ
+    เศษที่หารไม่ลงตัวจะถูกกระจายให้ batch แรกๆ ทีละ 1 ตัว
+    """
+    n = len(items)
+    base, extra = divmod(n, total)
+    start = (index - 1) * base + min(index - 1, extra)
+    size = base + (1 if index <= extra else 0)
+    return items[start:start + size], start
+
+
+def batch_sheet_name(index):
+    prefix = os.getenv("BATCH_SHEET_PREFIX", "Batch_")
+    return f"{prefix}{index:02d}"
+
+
 if __name__ == "__main__":
-    TIME_LIMIT_HOURS = float(os.getenv("TIME_LIMIT_HOURS", "5.5"))
-    WRITE_MODE = os.getenv("WRITE_MODE", "clear")
+    batch = resolve_batch()
 
     print("📋 กำลังอ่านรายชื่อ token จากชีต subscribetokens...")
     token_pairs = read_subscribe_tokens()
 
     if not token_pairs:
         print("❌ ไม่พบรายชื่อ token ในชีต subscribetokens")
-        exit()
+        sys.exit(1)
 
     print(f"✅ พบ {len(token_pairs)} token(s) ทั้งหมด")
 
-    client = get_gsheet_client()
-    try:
-        state_sheet = client.open_by_key(GSHEET_KEY).worksheet("state")
-        start_index_str = state_sheet.acell('A1').value
-        start_index = int(start_index_str) if start_index_str and start_index_str.isdigit() else 0
-    except Exception as e:
-        print(f"⚠️ ไม่สามารถอ่านชีต 'state' ได้ หรือไม่มีข้อมูล (เริ่มจาก 0)")
-        start_index = 0
+    if batch:
+        index, total = batch
+        my_tokens, offset = slice_for_batch(token_pairs, index, total)
+        target_sheet = batch_sheet_name(index)
+        print(f"🧩 Batch {index}/{total} → token ลำดับ {offset + 1}–{offset + len(my_tokens)} "
+              f"({len(my_tokens)} ตัว) เขียนลงแท็บ '{target_sheet}'")
+        if not my_tokens:
+            # batch เกินจำนวน token ที่มี (เช่นลบ token ออกจากชีต) — ไม่ใช่ error
+            print("ℹ️ batch นี้ไม่มี token ที่ต้องทำ — จบการทำงาน")
+            ensure_worksheet(target_sheet)
+            bulk_write_to_gsheet([], mode="clear", worksheet_name=target_sheet, write_headers=True)
+            sys.exit(0)
+    else:
+        my_tokens = token_pairs
+        target_sheet = GSHEET_WORKSHEET
+        print(f"🧩 โหมดรันเดียวจบ → token ทั้งหมด {len(my_tokens)} ตัว เขียนลงแท็บ '{target_sheet}'")
 
-    if start_index >= len(token_pairs):
-        start_index = 0
+    # แต่ละ batch เป็นเจ้าของแท็บตัวเอง จึงล้างแท็บตัวเองได้อย่างปลอดภัย
+    # ไม่มีการแตะแท็บของ batch อื่น — ปัญหา clear ทับกันจึงหมดไป
+    ensure_worksheet(target_sheet)
 
-    # ⚠️ สำคัญ: ล้างชีตได้เฉพาะตอนเริ่มรอบใหม่ที่ index 0 เท่านั้น
-    # ถ้ารันต่อจาก state เดิม (start_index > 0) แล้วยังใช้ clear
-    # ข้อมูลของรอบก่อนหน้าจะถูกลบทิ้งทั้งหมด เหลือแค่ชิ้นสุดท้าย
-    effective_mode = WRITE_MODE if start_index == 0 else "append"
-    if effective_mode != WRITE_MODE:
-        print(f"ℹ️ start_index={start_index} (>0) → บังคับใช้ mode=append แทน {WRITE_MODE} เพื่อไม่ให้ข้อมูลเดิมหาย")
-
-    print(f"▶️ เริ่มต้นรันที่ index {start_index} (WRITE_MODE={effective_mode})")
-
-    # สะสมผลลัพธ์ทุก token
     all_results = []
     total_written = 0
+    first_write = True
     start_time = time.time()
     time_limit_sec = TIME_LIMIT_HOURS * 3600
-    next_index = start_index
 
-    def save_state(index):
-        """บันทึก index ถัดไปลงชีต 'state'"""
-        try:
-            try:
-                st = client.open_by_key(GSHEET_KEY).worksheet("state")
-            except Exception:
-                st = client.open_by_key(GSHEET_KEY).add_worksheet(title="state", rows="10", cols="10")
-            st.update_acell('A1', str(index))
-        except Exception as e:
-            print(f"❌ ไม่สามารถบันทึก state ลงชีต 'state' ได้: {e}")
+    def flush():
+        """เขียนผลที่สะสมไว้ลงแท็บของ batch นี้ — เรียกได้หลายครั้งระหว่างรัน"""
+        global all_results, total_written, first_write
+        if not all_results:
+            return
+        # ครั้งแรกของรัน = ล้างแท็บตัวเองแล้วเขียนใหม่ (ข้อมูลรอบก่อนของ batch นี้)
+        # ครั้งต่อๆ ไป = ต่อท้าย ไม่งั้นจะล้างของที่ตัวเองเพิ่งเขียน
+        bulk_write_to_gsheet(
+            all_results,
+            mode="clear" if first_write else "append",
+            worksheet_name=target_sheet,
+        )
+        total_written += len(all_results)
+        all_results = []
+        first_write = False
 
-    def flush(index):
-        """เขียนผลที่สะสมไว้ลงชีต แล้วเลื่อน state — เรียกได้หลายครั้งระหว่างรัน"""
-        global all_results, total_written, effective_mode
-        if all_results:
-            bulk_write_to_gsheet(all_results, mode=effective_mode)
-            total_written += len(all_results)
-            all_results = []
-            # หลัง flush ครั้งแรกต้องเป็น append เสมอ ไม่งั้นจะล้างของตัวเองทิ้ง
-            effective_mode = "append"
-        save_state(index if index < len(token_pairs) else 0)
-
-    for idx, (token_address, chain) in enumerate(token_pairs[start_index:]):
-        current_index = start_index + idx
+    for idx, (token_address, chain) in enumerate(my_tokens):
         try:
             row = analyze_token(token_address, chain)
             if row:
                 all_results.append(row)
-                print(f"   📝 สะสมผล: {total_written + len(all_results)} แถว")
+                print(f"   📝 สะสมผล: {total_written + len(all_results)} แถว "
+                      f"({idx + 1}/{len(my_tokens)} ของ batch)")
         except Exception as e:
             print(f"❌ Error วิเคราะห์ {token_address[:12]}...: {e}")
 
-        next_index = current_index + 1
-
-        # เขียนลงชีตเป็นระยะ เพื่อไม่ให้เสียงานทั้งรอบถ้า job ตายกลางทาง
+        # เขียนลงชีตเป็นระยะ เพื่อไม่ให้เสียงานทั้ง batch ถ้า job ตายกลางทาง
         if FLUSH_EVERY > 0 and len(all_results) >= FLUSH_EVERY:
-            flush(next_index)
+            flush()
 
         elapsed_time = time.time() - start_time
-        if elapsed_time >= time_limit_sec:
-            print(f"\n⏱️ เวลาทำงาน ({elapsed_time/3600:.2f} ชม.) ถึงขีดจำกัดแล้ว ({TIME_LIMIT_HOURS} ชม.) — หยุด loop")
+        if elapsed_time >= time_limit_sec and idx + 1 < len(my_tokens):
+            # ปกติไม่ควรถึงตรงนี้ — batch ถูกซอยให้เล็กพอจบในเวลา
+            print(f"\n⏱️ เวลาทำงาน ({elapsed_time/3600:.2f} ชม.) ถึงขีดจำกัด ({TIME_LIMIT_HOURS} ชม.) — หยุด")
+            print(f"⚠️ batch นี้ทำได้ {idx + 1}/{len(my_tokens)} token — ควรเพิ่มจำนวน batch ให้ซอยถี่ขึ้น")
             break
 
-        # หน่วงเวลาระหว่าง token (ยกเว้นตัวสุดท้ายหรือถึง limit)
-        if next_index < len(token_pairs):
+        if idx + 1 < len(my_tokens):
             print(f"\n⏳ รอ {DELAY_BETWEEN_TOKENS} วินาที ก่อนวิเคราะห์ตัวถัดไป...")
             time.sleep(DELAY_BETWEEN_TOKENS)
 
-    # Bulk write ส่วนที่เหลือ + บันทึก state
-    if not all_results and total_written == 0:
+    flush()
+
+    if total_written == 0:
         print("❌ ไม่มีผลลัพธ์ที่ต้องบันทึก")
+        # เขียน header ไว้ ให้ขั้นรวมแท็บอ่านแท็บนี้ได้โดยไม่ error
+        bulk_write_to_gsheet([], mode="clear", worksheet_name=target_sheet, write_headers=True)
 
-    if next_index >= len(token_pairs):
-        print("🏁 รันครบทุก token แล้ว! รีเซ็ต index กลับเป็น 0")
-    else:
-        print(f"⏸️ หยุดพักที่ index {next_index} บันทึกลง sheet 'state'")
-
-    flush(next_index)
-
-    print(f"\n🏁 วิเคราะห์จบการทำงานรอบนี้ — บันทึกไป {total_written} แถว")
+    print(f"\n🏁 จบการทำงาน — บันทึก {total_written} แถวลงแท็บ '{target_sheet}'")
