@@ -11,7 +11,7 @@
 ```
 plan ──> analyze (matrix: batch 1..N) ──> merge
  │             │                            │
- │             └─ แต่ละ job เขียนแท็บ        └─ รวมทุกแท็บ → 'bubbleeee'
+ │             └─ แต่ละ job เขียนแท็บ        └─ รวมทุกแท็บ → 'merge'
  │                Batch_01 … Batch_NN
  └─ นับ token ในชีต แล้วคำนวณว่าต้องใช้กี่ batch
 ```
@@ -51,7 +51,7 @@ plan ──> analyze (matrix: batch 1..N) ──> merge
 | `SHEETS_WRITE_DELAY_MS` | `1500` | เว้นจังหวะเขียน (Google จำกัด ~60 writes/นาที **รวมทุก runner**) |
 | `HTTP_MAX_ATTEMPTS` | `4` | จำนวนครั้งที่ retry เมื่อ API ตอบ 5xx / 429 |
 | `MAX_BATCHES` | `256` | เพดานจำนวน job ต่อรอบ (ลิมิตของ GitHub) |
-| `CLEANUP_BATCH_TABS` | `0` | ตั้ง `1` ให้ลบแท็บ `Batch_NN` ทิ้งหลังรวมเสร็จ |
+| `CLEANUP_BATCH_TABS` | `1` | ลบแท็บ `Batch_NN` ทิ้งหลังรวมเสร็จ — ตั้ง `0` ถ้าอยากเก็บไว้ตรวจสอบ |
 
 ### ปรับ max_parallel ยังไง
 
@@ -81,3 +81,8 @@ python merge.py                   # รวมทุกแท็บ Batch_NN → 
 
 rerun เฉพาะ batch ที่พังจากหน้า Actions ได้เลย มันจะเขียนทับแท็บตัวเอง
 แล้วค่อยรัน `merge` ซ้ำ — ไม่กระทบข้อมูลของ batch อื่น
+
+**ข้อควรรู้เรื่องการลบแท็บ**: `merge` จะลบแท็บ `Batch_NN` ก็ต่อเมื่อเขียนลง
+ชีต `merge` สำเร็จแล้วเท่านั้น ถ้าเขียนพลาดจะไม่แตะแท็บใดเลยแล้ว exit 1
+แต่เมื่อลบไปแล้ว การ rerun `merge` เดี่ยวๆ จะไม่มีข้อมูลให้รวมอีก —
+ต้องรัน analyze ใหม่ ถ้าอยากเก็บแท็บไว้ตรวจสอบให้ตั้ง `cleanup_batch_tabs` = `0`

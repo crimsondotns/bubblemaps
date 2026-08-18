@@ -12,8 +12,11 @@ from shared import get_gsheet_client, GSHEET_KEY
 
 BATCH_SHEET_PREFIX = os.getenv("BATCH_SHEET_PREFIX", "Batch_")
 SHEETS_WRITE_DELAY_MS = int(os.getenv("SHEETS_WRITE_DELAY_MS", "1500"))
-# ลบแท็บ Batch_* ทิ้งหลังรวมเสร็จ (default: เก็บไว้ ใช้ไล่ดูตอนมีปัญหา)
-CLEANUP_BATCH_TABS = os.getenv("CLEANUP_BATCH_TABS", "0") == "1"
+# ลบแท็บ Batch_* ทิ้งหลังรวมเสร็จ — ลบต่อเมื่อเขียนชีตหลักสำเร็จแล้วเท่านั้น
+CLEANUP_BATCH_TABS = os.getenv("CLEANUP_BATCH_TABS", "1") == "1"
+# จำนวน batch ของรอบนี้ (จาก job plan) — แท็บที่เลขเกินนี้คือของเก่าค้างจากรอบ
+# ที่ token เยอะกว่า ต้องไม่เอามารวม ไม่งั้นข้อมูลเก่าจะปนเข้ามา
+BATCH_TOTAL = int(os.getenv("BATCH_TOTAL", "0"))
 
 
 def batch_index(title):
@@ -33,6 +36,14 @@ def main():
         key=lambda pair: pair[0] if pair[0] is not None else -1,
     )
     tabs = [(i, ws) for i, ws in tabs if i is not None]
+
+    stale = []
+    if BATCH_TOTAL:
+        stale = [ws for i, ws in tabs if i > BATCH_TOTAL]
+        if stale:
+            print(f"⚠️ ข้ามแท็บค้างจากรอบก่อน {len(stale)} แท็บ (เลขเกิน {BATCH_TOTAL}): "
+                  f"{', '.join(w.title for w in stale)}")
+        tabs = [(i, ws) for i, ws in tabs if i <= BATCH_TOTAL]
 
     if not tabs:
         print(f"❌ ไม่พบแท็บที่ขึ้นต้นด้วย '{BATCH_SHEET_PREFIX}' — ไม่มีอะไรให้รวม")
@@ -69,16 +80,30 @@ def main():
         sys.exit(1)
 
     ensure_worksheet(GSHEET_WORKSHEET, rows=max(2000, len(merged) + 100), cols=len(HEADERS) + 2)
-    bulk_write_to_gsheet(merged, mode="clear", worksheet_name=GSHEET_WORKSHEET)
+    ok = bulk_write_to_gsheet(merged, mode="clear", worksheet_name=GSHEET_WORKSHEET)
+
+    if not ok:
+        # แท็บ batch คือสำเนาเดียวที่เหลือของข้อมูลชุดนี้ — ห้ามแตะเด็ดขาด
+        print(f"❌ เขียนลงแท็บ '{GSHEET_WORKSHEET}' ไม่สำเร็จ — ไม่ลบแท็บ batch, rerun merge ได้เลย")
+        sys.exit(1)
 
     if CLEANUP_BATCH_TABS:
+        # มาถึงตรงนี้ได้แปลว่าข้อมูลอยู่ในชีตหลักครบแล้ว แท็บ batch จึงเป็นสำเนาซ้ำ
         print("\n🧹 ลบแท็บ batch ทิ้ง...")
-        for _index, ws in tabs:
+        failed = []
+        # ลบแท็บค้างด้วย ไม่งั้นมันจะกวนรอบถัดๆ ไปตลอด
+        for ws in [w for _i, w in tabs] + stale:
             try:
                 sh.del_worksheet(ws)
                 time.sleep(SHEETS_WRITE_DELAY_MS / 1000)
             except Exception as e:
+                failed.append(ws.title)
                 print(f"   ⚠️ ลบ {ws.title} ไม่สำเร็จ: {e}")
+        if failed:
+            # ไม่ใช่เรื่องคอขาดบาดตาย ข้อมูลปลอดภัยแล้ว รอบหน้าจะเขียนทับเอง
+            print(f"   ℹ️ เหลือ {len(failed)} แท็บที่ลบไม่ได้ — รอบหน้าจะถูกเขียนทับอยู่ดี")
+        else:
+            print("   ✅ ลบแท็บ batch ครบแล้ว")
 
     print(f"\n✅ รวมข้อมูลเสร็จ — {len(merged)} แถวในแท็บ '{GSHEET_WORKSHEET}'")
 

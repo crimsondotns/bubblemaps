@@ -16,6 +16,10 @@ on:
         description: 'จำนวน job ที่รันพร้อมกัน'
         required: false
         default: '3'
+      cleanup_batch_tabs:
+        description: 'ลบแท็บ Batch_NN ทิ้งหลังรวมเสร็จ (1 = ลบ, 0 = เก็บไว้ตรวจสอบ)'
+        required: false
+        default: '1'
 
 # กันไม่ให้รอบใหม่ทับรอบเก่าที่ยังทำงานอยู่
 concurrency:
@@ -114,4 +118,9 @@ jobs:
           python -c "import os; open('credentials.json', 'w').write(os.environ.get('GCP_CREDS', ''))"
           python -c "import os; open('.env', 'w').write(os.environ.get('ENV_FILE_CONTENT', ''))"
       - name: Merge batch tabs
+        env:
+          # ให้ merge รู้ว่ารอบนี้มีกี่ batch — แท็บที่เลขเกินนี้คือของค้างจาก
+          # รอบที่ token เยอะกว่า ต้องไม่ถูกรวมเข้ามา
+          BATCH_TOTAL: ${{ needs.plan.outputs.batch_total }}
+          CLEANUP_BATCH_TABS: ${{ inputs.cleanup_batch_tabs || '1' }}
         run: python merge.py

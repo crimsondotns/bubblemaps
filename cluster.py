@@ -25,7 +25,7 @@ SHEETS_WRITE_DELAY_MS = int(os.getenv("SHEETS_WRITE_DELAY_MS", "1500"))  # เ�
 TIME_LIMIT_HOURS = float(os.getenv("TIME_LIMIT_HOURS", "5.0"))
 
 # ── Google Sheets ──
-GSHEET_WORKSHEET = "bubbleeee"
+GSHEET_WORKSHEET = "merge"
 SUBSCRIBE_WORKSHEET = "subscribetokens"
 
 # ╔═══════════════════════════════════════════════════════════════════╗
@@ -71,9 +71,12 @@ def bulk_write_to_gsheet(all_rows, mode="clear", worksheet_name=None, write_head
 
     worksheet_name = แท็บปลายทาง (default: GSHEET_WORKSHEET)
     แต่ละ batch เขียนแท็บของตัวเองเท่านั้น จึงไม่มีทางล้างข้อมูลของ batch อื่น
+
+    คืน True ถ้าเขียนสำเร็จ, False ถ้าล้มเหลวหลัง retry ครบแล้ว
+    ผู้เรียกต้องเช็คค่านี้ก่อนทำอะไรที่ทำลายข้อมูลต้นทาง (เช่นลบแท็บ)
     """
     if not all_rows and not write_headers:
-        return
+        return True
 
     sheet_name = worksheet_name or GSHEET_WORKSHEET
     print(f"\n5️⃣ กำลังบันทึก {len(all_rows)} แถวลงแท็บ '{sheet_name}' (mode={mode})...")
@@ -107,7 +110,7 @@ def bulk_write_to_gsheet(all_rows, mode="clear", worksheet_name=None, write_head
                 time.sleep(SHEETS_WRITE_DELAY_MS / 1000)
 
             print("✅ บันทึกข้อมูลสำเร็จ! ตรวจสอบ Google Sheets ได้เลย")
-            return
+            return True
         except Exception as e:
             wait_time = 2 ** attempt
             print(f"   ⚠️ ครั้งที่ {attempt}/{max_retries} — {e}")
@@ -116,6 +119,8 @@ def bulk_write_to_gsheet(all_rows, mode="clear", worksheet_name=None, write_head
                 time.sleep(wait_time)
             else:
                 print(f"   ❌ ล้มเหลวหลัง {max_retries} ครั้ง — ข้อมูลไม่ได้บันทึก")
+
+    return False
 
 
 # ─────────────────────── Main ────────────────────────────────────────
@@ -328,21 +333,27 @@ if __name__ == "__main__":
     all_results = []
     total_written = 0
     first_write = True
+    write_failed = False
     start_time = time.time()
     time_limit_sec = TIME_LIMIT_HOURS * 3600
 
     def flush():
         """เขียนผลที่สะสมไว้ลงแท็บของ batch นี้ — เรียกได้หลายครั้งระหว่างรัน"""
-        global all_results, total_written, first_write
+        global all_results, total_written, first_write, write_failed
         if not all_results:
             return
         # ครั้งแรกของรัน = ล้างแท็บตัวเองแล้วเขียนใหม่ (ข้อมูลรอบก่อนของ batch นี้)
         # ครั้งต่อๆ ไป = ต่อท้าย ไม่งั้นจะล้างของที่ตัวเองเพิ่งเขียน
-        bulk_write_to_gsheet(
+        ok = bulk_write_to_gsheet(
             all_results,
             mode="clear" if first_write else "append",
             worksheet_name=target_sheet,
         )
+        if not ok:
+            # เก็บแถวไว้ในบัฟเฟอร์ ให้ flush ครั้งหน้าลองเขียนอีกที
+            print(f"   ⚠️ เก็บ {len(all_results)} แถวไว้ลองใหม่รอบหน้า")
+            write_failed = True
+            return
         total_written += len(all_results)
         all_results = []
         first_write = False
@@ -380,3 +391,8 @@ if __name__ == "__main__":
         bulk_write_to_gsheet([], mode="clear", worksheet_name=target_sheet, write_headers=True)
 
     print(f"\n🏁 จบการทำงาน — บันทึก {total_written} แถวลงแท็บ '{target_sheet}'")
+
+    if write_failed or all_results:
+        # ต้องให้ job ขึ้นแดง ไม่งั้น merge จะรวมข้อมูลที่ไม่ครบไปเงียบๆ
+        print(f"❌ มี {len(all_results)} แถวที่เขียนลงชีตไม่สำเร็จ — rerun batch นี้ได้เลย")
+        sys.exit(1)
