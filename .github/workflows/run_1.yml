@@ -5,6 +5,11 @@ on:
     - cron: '0 0 * * *' # 00:00 UTC (07:00 UTC+7)
   workflow_dispatch:
 
+# กันไม่ให้ run 1 กับ run 2 ทับกัน (แย่งกันอ่าน/เขียน sheet 'state')
+concurrency:
+  group: token-analysis
+  cancel-in-progress: false
+
 jobs:
   analyze:
     runs-on: ubuntu-latest

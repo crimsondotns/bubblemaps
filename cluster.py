@@ -19,6 +19,7 @@ TARGET_WALLET = ""  # ระบุ address ที่ต้องการดู 
 FETCH_COUNT = 80
 MAX_MAGIC_ROUNDS = 1  # จำนวนรอบสูงสุดของ Recursive Magic Expand
 DELAY_BETWEEN_TOKENS = 10  # วินาทีระหว่างแต่ละ token
+FLUSH_EVERY = 50  # เขียนลงชีตทุกๆ กี่แถว (0 = เขียนครั้งเดียวตอนจบ)
 
 # ── Google Sheets ──
 GSHEET_WORKSHEET = "bubbleeee"
@@ -30,23 +31,24 @@ SUBSCRIBE_WORKSHEET = "subscribetokens"
 
 # ─────────────────────── Google Sheets ───────────────────────────────
 
+HEADERS = [
+    "Token Address", "Chain", "Wallet Address",
+    "Wallet Amount", "Wallet Share (%)", "Label",
+    "Addresses", "Cluster Size (Addresses)", "Cluster Amount", "Cluster Supply (%)",
+    "Timestamp (UTC+7)",
+]
+
+
 def bulk_write_to_gsheet(all_rows, mode="clear"):
     """บันทึกผลลัพธ์หลายแถวลง Google Sheets (bulk write + retry)
-    
-    mode="clear"  → ล้างชีตก่อนแล้วเขียนใหม่ (default, ใช้กับ workflow_1)
-    mode="append" → ต่อท้ายข้อมูลเดิม ไม่ล้าง (ใช้กับ workflow_2 เป็นต้นไป)
+
+    mode="clear"  → ล้างชีตก่อนแล้วเขียนใหม่ (ใช้เฉพาะตอนเริ่มรอบใหม่ที่ index 0)
+    mode="append" → ต่อท้ายข้อมูลเดิม ไม่ล้าง (ใช้กับการรันต่อจาก state เดิม)
     """
     if not all_rows:
         return
 
     print(f"\n5️⃣ กำลังบันทึก {len(all_rows)} แถวลง Google Sheets (mode={mode})...")
-
-    headers = [
-        "Token Address", "Chain", "Wallet Address",
-        "Wallet Amount", "Wallet Share (%)", "Label",
-        "Addresses", "Cluster Size (Addresses)", "Cluster Amount", "Cluster Supply (%)",
-        "Timestamp (UTC+7)",
-    ]
 
     BATCH_SIZE = 500
     max_retries = 5
@@ -58,13 +60,14 @@ def bulk_write_to_gsheet(all_rows, mode="clear"):
 
             if mode == "clear":
                 sheet.clear()
-                all_data = [headers] + all_rows
+                all_data = [HEADERS] + all_rows
                 start_offset = 0
             else:
                 # append: หาแถวสุดท้ายที่มีข้อมูลแล้วต่อท้าย (ไม่ใส่ headers ซ้ำ)
                 existing = sheet.col_values(1)  # Column A
                 start_offset = len(existing)    # แถวถัดไปที่ว่าง (0-indexed)
-                all_data = all_rows
+                # ถ้าชีตยังว่างอยู่ (เช่นถูกล้างไว้) ต้องใส่ header ให้ด้วย
+                all_data = all_rows if start_offset else [HEADERS] + all_rows
 
             for i in range(0, len(all_data), BATCH_SIZE):
                 batch = all_data[i:i + BATCH_SIZE]
@@ -233,13 +236,43 @@ if __name__ == "__main__":
     if start_index >= len(token_pairs):
         start_index = 0
 
-    print(f"▶️ เริ่มต้นรันที่ index {start_index} (WRITE_MODE={WRITE_MODE})")
+    # ⚠️ สำคัญ: ล้างชีตได้เฉพาะตอนเริ่มรอบใหม่ที่ index 0 เท่านั้น
+    # ถ้ารันต่อจาก state เดิม (start_index > 0) แล้วยังใช้ clear
+    # ข้อมูลของรอบก่อนหน้าจะถูกลบทิ้งทั้งหมด เหลือแค่ชิ้นสุดท้าย
+    effective_mode = WRITE_MODE if start_index == 0 else "append"
+    if effective_mode != WRITE_MODE:
+        print(f"ℹ️ start_index={start_index} (>0) → บังคับใช้ mode=append แทน {WRITE_MODE} เพื่อไม่ให้ข้อมูลเดิมหาย")
+
+    print(f"▶️ เริ่มต้นรันที่ index {start_index} (WRITE_MODE={effective_mode})")
 
     # สะสมผลลัพธ์ทุก token
     all_results = []
+    total_written = 0
     start_time = time.time()
     time_limit_sec = TIME_LIMIT_HOURS * 3600
     next_index = start_index
+
+    def save_state(index):
+        """บันทึก index ถัดไปลงชีต 'state'"""
+        try:
+            try:
+                st = client.open_by_key(GSHEET_KEY).worksheet("state")
+            except Exception:
+                st = client.open_by_key(GSHEET_KEY).add_worksheet(title="state", rows="10", cols="10")
+            st.update_acell('A1', str(index))
+        except Exception as e:
+            print(f"❌ ไม่สามารถบันทึก state ลงชีต 'state' ได้: {e}")
+
+    def flush(index):
+        """เขียนผลที่สะสมไว้ลงชีต แล้วเลื่อน state — เรียกได้หลายครั้งระหว่างรัน"""
+        global all_results, total_written, effective_mode
+        if all_results:
+            bulk_write_to_gsheet(all_results, mode=effective_mode)
+            total_written += len(all_results)
+            all_results = []
+            # หลัง flush ครั้งแรกต้องเป็น append เสมอ ไม่งั้นจะล้างของตัวเองทิ้ง
+            effective_mode = "append"
+        save_state(index if index < len(token_pairs) else 0)
 
     for idx, (token_address, chain) in enumerate(token_pairs[start_index:]):
         current_index = start_index + idx
@@ -247,12 +280,16 @@ if __name__ == "__main__":
             row = analyze_token(token_address, chain)
             if row:
                 all_results.append(row)
-                print(f"   📝 สะสมผล: {len(all_results)} แถว")
+                print(f"   📝 สะสมผล: {total_written + len(all_results)} แถว")
         except Exception as e:
             print(f"❌ Error วิเคราะห์ {token_address[:12]}...: {e}")
 
         next_index = current_index + 1
-        
+
+        # เขียนลงชีตเป็นระยะ เพื่อไม่ให้เสียงานทั้งรอบถ้า job ตายกลางทาง
+        if FLUSH_EVERY > 0 and len(all_results) >= FLUSH_EVERY:
+            flush(next_index)
+
         elapsed_time = time.time() - start_time
         if elapsed_time >= time_limit_sec:
             print(f"\n⏱️ เวลาทำงาน ({elapsed_time/3600:.2f} ชม.) ถึงขีดจำกัดแล้ว ({TIME_LIMIT_HOURS} ชม.) — หยุด loop")
@@ -263,28 +300,15 @@ if __name__ == "__main__":
             print(f"\n⏳ รอ {DELAY_BETWEEN_TOKENS} วินาที ก่อนวิเคราะห์ตัวถัดไป...")
             time.sleep(DELAY_BETWEEN_TOKENS)
 
-    # Bulk write ทีเดียว
-    if all_results:
-        bulk_write_to_gsheet(all_results, mode=WRITE_MODE)
-    else:
+    # Bulk write ส่วนที่เหลือ + บันทึก state
+    if not all_results and total_written == 0:
         print("❌ ไม่มีผลลัพธ์ที่ต้องบันทึก")
 
-    # บันทึก State
-    try:
-        if next_index >= len(token_pairs):
-            next_index = 0
-            print("🏁 รันครบทุก token แล้ว! รีเซ็ต index กลับเป็น 0")
-        else:
-            print(f"⏸️ หยุดพักที่ index {next_index} บันทึกลง sheet 'state'")
-            
-        try:
-            state_sheet = client.open_by_key(GSHEET_KEY).worksheet("state")
-        except:
-            # ถ้ายังไม่มี sheet ชื่อ state ให้สร้างใหม่
-            state_sheet = client.open_by_key(GSHEET_KEY).add_worksheet(title="state", rows="10", cols="10")
-            
-        state_sheet.update_acell('A1', str(next_index))
-    except Exception as e:
-        print(f"❌ ไม่สามารถบันทึก state ลงชีต 'state' ได้: {e}")
+    if next_index >= len(token_pairs):
+        print("🏁 รันครบทุก token แล้ว! รีเซ็ต index กลับเป็น 0")
+    else:
+        print(f"⏸️ หยุดพักที่ index {next_index} บันทึกลง sheet 'state'")
 
-    print(f"\n🏁 วิเคราะห์จบการทำงานรอบนี้ — บันทึกไป {len(all_results)} แถว")
+    flush(next_index)
+
+    print(f"\n🏁 วิเคราะห์จบการทำงานรอบนี้ — บันทึกไป {total_written} แถว")

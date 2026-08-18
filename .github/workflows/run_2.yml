@@ -2,8 +2,13 @@ name: Token Analysis - Run 2 (Append)
 
 on:
   schedule:
-    - cron: '0 6 * * *'
+    - cron: '0 7 * * *' # 07:00 UTC — เผื่อ run 1 (เริ่ม 00:00 + limit 5.5 ชม.) จบก่อน
   workflow_dispatch:
+
+# กันไม่ให้ run 1 กับ run 2 ทับกัน (แย่งกันอ่าน/เขียน sheet 'state')
+concurrency:
+  group: token-analysis
+  cancel-in-progress: false
 
 jobs:
   analyze:
